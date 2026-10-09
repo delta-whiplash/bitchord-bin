@@ -3,7 +3,7 @@
 pkgname=bitchord-bin
 _appname=BitChord
 pkgver=1.8
-pkgrel=4
+pkgrel=5
 pkgdesc="A modern YouTube Music client with clean aesthetics inspired by Apple Music (prebuilt)"
 arch=('x86_64')
 url="https://github.com/kushagrasinghx/BitChord"
@@ -11,6 +11,7 @@ license=('GPL-3.0-only')
 depends=('glibc' 'jq')
 makedepends=('imagemagick')
 optdepends=('libnotify: notification when launching while an instance is already running'
+            'kscreen: KDE Wayland monitor-scale detection for HiDPI'
             'mpv: alternative media backend')
 provides=('bitchord')
 conflicts=('bitchord')
@@ -36,19 +37,18 @@ package() {
     cp -a "${srcdir}/opt/bitchord" "${pkgdir}/opt/bitchord"
 
     # ---- Wrapper in PATH ----------------------------------------
+    # Desktop-agnostic: every integration below is optional and guarded —
+    # on GNOME/KDE (which scale XWayland themselves) the wrapper does
+    # nothing beyond launching; on compositors without XSettings
+    # (Hyprland, Sway, ...) it detects the monitor scale and passes it to
+    # AWT via sun.java2d.uiScale (fractional-capable, unlike GDK_SCALE
+    # which is integer-only), so the app renders at the right size.
+    # A user-set GDK_SCALE or uiScale always takes precedence.
+    #
     # Single-instance: the jpackage launcher is a plain JVM starter with
     # no activation mechanism, so every invocation would spawn a second
-    # instance. If one is already running, focus its window (Hyprland)
-    # and exit instead.
-    #
-    # HiDPI: the app is a Compose Desktop (AWT) app, so it runs through
-    # XWayland. Desktops with XSettings (GNOME, KDE) scale it
-    # automatically, but compositors without XSettings (Hyprland, Sway,
-    # ...) leave it at scale 1, where the compositor upscales the buffer
-    # (blurry). Pass the compositor's monitor scale to AWT via
-    # sun.java2d.uiScale (supports fractional scales, unlike GDK_SCALE
-    # which is integer-only). A user-set GDK_SCALE or uiScale always
-    # takes precedence.
+    # instance. If one is already running, try to focus its window
+    # (best-effort, Hyprland) and exit.
     install -dm755 "${pkgdir}/usr/bin"
     cat > "${pkgdir}/usr/bin/bitchord" <<'EOF'
 #!/bin/sh
@@ -56,7 +56,7 @@ if _pid=$(pgrep -x BitChord | head -n1) && [ -n "$_pid" ]; then
     if command -v hyprctl >/dev/null 2>&1 && hyprctl dispatch focuswindow "pid:$_pid" >/dev/null 2>&1; then
         :
     else
-        notify-send "BitChord" "Already running — use the tray icon to reopen its window." 2>/dev/null \
+        notify-send "BitChord" "Already running." 2>/dev/null \
             || echo "BitChord is already running (pid $_pid)." >&2
     fi
     exit 0
@@ -67,6 +67,9 @@ if [ -z "$GDK_SCALE" ] && [ -z "$JAVA_TOOL_OPTIONS" ] && ! echo "$JDK_JAVA_OPTIO
         _scale=$(hyprctl -j monitors 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // empty' 2>/dev/null)
     elif command -v swaymsg >/dev/null 2>&1 && swaymsg -t get_outputs >/dev/null 2>&1; then
         _scale=$(swaymsg -t get_outputs 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // empty' 2>/dev/null)
+    elif command -v kscreen-doctor >/dev/null 2>&1; then
+        # KDE Wayland; timeout guards against missing kscreen daemon
+        _scale=$(timeout 2 kscreen-doctor -o 2>/dev/null | grep -om1 'scale [0-9.]*' | cut -d' ' -f2)
     fi
     case "$_scale" in ''|null|1) ;; *) export JAVA_TOOL_OPTIONS="-Dsun.java2d.uiScale=$_scale" ;; esac
 fi

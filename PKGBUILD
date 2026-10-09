@@ -3,12 +3,13 @@
 pkgname=bitchord-bin
 _appname=BitChord
 pkgver=1.8
-pkgrel=2
+pkgrel=3
 pkgdesc="A modern YouTube Music client with clean aesthetics inspired by Apple Music (prebuilt)"
 arch=('x86_64')
 url="https://github.com/kushagrasinghx/BitChord"
 license=('GPL-3.0-only')
 depends=('glibc' 'jq')
+makedepends=('imagemagick')
 optdepends=('mpv: alternative media backend')
 provides=('bitchord')
 conflicts=('bitchord')
@@ -35,15 +36,23 @@ package() {
 
     # ---- Wrapper in PATH ----------------------------------------
     # The app is a Compose Desktop (AWT) app: under Wayland it runs via
-    # XWayland and, with no XSettings daemon, renders at scale 1 and gets
-    # upscaled (blurry). Detect the Hyprland monitor scale and pass it as
-    # GDK_SCALE so AWT renders at native resolution.
+    # XWayland. Desktops with XSettings (GNOME, KDE) scale it automatically,
+    # but compositors without XSettings (Hyprland, Sway, ...) leave it at
+    # scale 1, where the compositor upscales the buffer (blurry). Pass the
+    # compositor's monitor scale to AWT via sun.java2d.uiScale (supports
+    # fractional scales, unlike GDK_SCALE which is integer-only). A
+    # user-set GDK_SCALE or uiScale always takes precedence.
     install -dm755 "${pkgdir}/usr/bin"
     cat > "${pkgdir}/usr/bin/bitchord" <<'EOF'
 #!/bin/sh
-if [ -z "$GDK_SCALE" ] && command -v hyprctl >/dev/null 2>&1 && hyprctl monitors >/dev/null 2>&1; then
-    GDK_SCALE=$(hyprctl -j monitors 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // 1' 2>/dev/null)
-    [ -n "$GDK_SCALE" ] && [ "$GDK_SCALE" != "null" ] && export GDK_SCALE
+if [ -z "$GDK_SCALE" ] && [ -z "$JAVA_TOOL_OPTIONS" ] && ! echo "$JDK_JAVA_OPTIONS $_JAVA_OPTIONS" | grep -q uiScale; then
+    _scale=""
+    if command -v hyprctl >/dev/null 2>&1 && hyprctl monitors >/dev/null 2>&1; then
+        _scale=$(hyprctl -j monitors 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // empty' 2>/dev/null)
+    elif command -v swaymsg >/dev/null 2>&1 && swaymsg -t get_outputs >/dev/null 2>&1; then
+        _scale=$(swaymsg -t get_outputs 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // empty' 2>/dev/null)
+    fi
+    case "$_scale" in ''|null|1) ;; *) export JAVA_TOOL_OPTIONS="-Dsun.java2d.uiScale=$_scale" ;; esac
 fi
 exec /opt/bitchord/bin/BitChord "$@"
 EOF
@@ -63,8 +72,18 @@ Categories=Audio;AudioVideo;Music;
 EOF
 
     # ---- Icon ---------------------------------------------------
-    install -Dm644 "${srcdir}/opt/bitchord/lib/BitChord.png" \
+    # Ship every standard hicolor size: some icon resolvers ignore
+    # non-standard directories like 1024x1024 (observed as a placeholder
+    # icon in launchers and tray menus).
+    _icon="${srcdir}/opt/bitchord/lib/BitChord.png"
+    install -Dm644 "$_icon" \
         "${pkgdir}/usr/share/icons/hicolor/1024x1024/apps/bitchord.png"
+    for _s in 16 24 32 48 64 128 256 512; do
+        install -dm755 "${pkgdir}/usr/share/icons/hicolor/${_s}x${_s}/apps"
+        magick "$_icon" -resize "${_s}x${_s}" \
+            "${pkgdir}/usr/share/icons/hicolor/${_s}x${_s}/apps/bitchord.png"
+        chmod 644 "${pkgdir}/usr/share/icons/hicolor/${_s}x${_s}/apps/bitchord.png"
+    done
 
     # ---- License ------------------------------------------------
     install -Dm644 "${srcdir}/LICENSE-${pkgver}" \

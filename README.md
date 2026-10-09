@@ -4,6 +4,8 @@ AUR package for [BitChord](https://github.com/kushagrasinghx/BitChord) — a mod
 
 Installs the prebuilt `jpackage` image (self-contained, bundled Java runtime) from the upstream `.deb` release asset.
 
+![BitChord running on Hyprland, pixel-perfect on a HiDPI display](screenshot.png)
+
 ```sh
 paru -S bitchord-bin
 ```

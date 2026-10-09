@@ -1,11 +1,12 @@
 pkgbase = bitchord-bin
 	pkgdesc = A modern YouTube Music client with clean aesthetics inspired by Apple Music (prebuilt)
 	pkgver = 1.8
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/kushagrasinghx/BitChord
 	arch = x86_64
 	license = GPL-3.0-only
 	depends = glibc
+	depends = jq
 	optdepends = mpv: alternative media backend
 	provides = bitchord
 	conflicts = bitchord

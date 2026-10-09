@@ -3,12 +3,12 @@
 pkgname=bitchord-bin
 _appname=BitChord
 pkgver=1.8
-pkgrel=1
+pkgrel=2
 pkgdesc="A modern YouTube Music client with clean aesthetics inspired by Apple Music (prebuilt)"
 arch=('x86_64')
 url="https://github.com/kushagrasinghx/BitChord"
 license=('GPL-3.0-only')
-depends=('glibc')
+depends=('glibc' 'jq')
 optdepends=('mpv: alternative media backend')
 provides=('bitchord')
 conflicts=('bitchord')
@@ -34,8 +34,20 @@ package() {
     cp -a "${srcdir}/opt/bitchord" "${pkgdir}/opt/bitchord"
 
     # ---- Wrapper in PATH ----------------------------------------
+    # The app is a Compose Desktop (AWT) app: under Wayland it runs via
+    # XWayland and, with no XSettings daemon, renders at scale 1 and gets
+    # upscaled (blurry). Detect the Hyprland monitor scale and pass it as
+    # GDK_SCALE so AWT renders at native resolution.
     install -dm755 "${pkgdir}/usr/bin"
-    ln -s /opt/bitchord/bin/BitChord "${pkgdir}/usr/bin/bitchord"
+    cat > "${pkgdir}/usr/bin/bitchord" <<'EOF'
+#!/bin/sh
+if [ -z "$GDK_SCALE" ] && command -v hyprctl >/dev/null 2>&1 && hyprctl monitors >/dev/null 2>&1; then
+    GDK_SCALE=$(hyprctl -j monitors 2>/dev/null | jq -r '[.[] | select(.focused == true) | .scale] | first // 1' 2>/dev/null)
+    [ -n "$GDK_SCALE" ] && [ "$GDK_SCALE" != "null" ] && export GDK_SCALE
+fi
+exec /opt/bitchord/bin/BitChord "$@"
+EOF
+    chmod 755 "${pkgdir}/usr/bin/bitchord"
 
     # ---- .desktop file ------------------------------------------
     install -dm755 "${pkgdir}/usr/share/applications"

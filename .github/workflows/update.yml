@@ -1,0 +1,99 @@
+name: Update AUR Package
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: aur-update-bitchord
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_update: ${{ steps.check.outputs.needs_update }}
+      current_version: ${{ steps.check.outputs.current_version }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+
+    steps:
+      - name: Check versions
+        id: check
+        env:
+          GH_REPO: kushagrasinghx/BitChord
+        run: |
+          UPSTREAM=$(curl -fsSL "https://api.github.com/repos/kushagrasinghx/BitChord/releases/latest" | jq -r '.tag_name' | sed 's/^v//')
+
+          if [[ -z "$UPSTREAM" || "$UPSTREAM" == "null" ]]; then
+            echo "Failed to fetch upstream version"
+            exit 1
+          fi
+
+          PKGBUILD=$(curl -fsSL "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=${{ github.event.repository.name }}")
+          CURRENT=$(echo "$PKGBUILD" | grep '^pkgver=' | head -1 | cut -d= -f2)
+
+          echo "upstream_version=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "Upstream: ${UPSTREAM}, AUR: ${CURRENT}"
+
+          if [[ "$CURRENT" == "$UPSTREAM" ]]; then
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
+            echo "## ⏭️ No update needed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Both at version **${UPSTREAM}**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "## 🔄 Update needed" >> "$GITHUB_STEP_SUMMARY"
+            echo "${CURRENT} → ${UPSTREAM}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  update:
+    needs: check
+    if: needs.check.outputs.needs_update == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install dependencies
+        run: pacman -Sy --noconfirm git pacman-contrib openssh sudo
+
+      - name: Setup builder user
+        run: |
+          useradd -m -s /bin/bash builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          mkdir -p /home/builder/.ssh
+          chown -R builder:builder /home/builder/.ssh
+          chmod 700 /home/builder/.ssh
+
+      - name: Configure SSH for builder
+        run: |
+          # Setup SSH for builder user
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > /home/builder/.ssh/aur_key
+          chown builder:builder /home/builder/.ssh/aur_key
+          chmod 600 /home/builder/.ssh/aur_key
+          echo "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" > /home/builder/.ssh/known_hosts
+          chown builder:builder /home/builder/.ssh/known_hosts
+          printf "Host aur.archlinux.org\n  IdentityFile /home/builder/.ssh/aur_key\n  User aur\n" > /home/builder/.ssh/config
+          chown builder:builder /home/builder/.ssh/config
+          chmod 600 /home/builder/.ssh/config
+
+      - name: Clone & update
+        run: |
+          NEW_VER="${{ needs.check.outputs.upstream_version }}"
+
+          # Clone as builder user
+          sudo -u builder bash -c 'export HOME=/home/builder && git clone ssh://aur@aur.archlinux.org/${{ github.event.repository.name }}.git /home/builder/pkg'
+
+          # Update PKGBUILD (upstream tags are v-prefixed, PKGBUILD pkgver is not)
+          sed -i "s/^pkgver=.*/pkgver=${NEW_VER}/; s/^pkgrel=.*/pkgrel=1/; s/-v\${pkgver}/-\${pkgver}/" /home/builder/pkg/PKGBUILD
+          sed -i "s/releases\/download\/v\${pkgver}/releases\/download\/v\${pkgver}/" /home/builder/pkg/PKGBUILD
+          chown builder:builder /home/builder/pkg/PKGBUILD
+
+          # Update checksums and SRCINFO
+          sudo -u builder bash -c 'export HOME=/home/builder && cd /home/builder/pkg && updpkgsums && makepkg --printsrcinfo > .SRCINFO'
+
+          # Configure git and commit
+          sudo -u builder bash -c 'export HOME=/home/builder && cd /home/builder/pkg && git config user.name "AUR Update Bot" && git config user.email "bot@users.noreply.github.com" && git add PKGBUILD .SRCINFO && git commit -m "upgpkg: '"${NEW_VER}"'" && git push'
+
+          echo "## ✅ Updated to ${NEW_VER}" >> "$GITHUB_STEP_SUMMARY"

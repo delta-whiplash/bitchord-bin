@@ -1,0 +1,44 @@
+name: Test PKGBUILD
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install dependencies and clone
+        run: |
+          pacman -Sy --noconfirm base-devel sudo git openssh
+
+          # Clone the repo inside the container
+          git clone https://github.com/delta-whiplash/bitchord-bin.git /home/builder/pkg
+
+          # Create build user
+          useradd -m -s /bin/bash builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder /home/builder/pkg
+
+      - name: Test makepkg
+        run: |
+          cd /home/builder/pkg
+          sudo -u builder makepkg -s --noconfirm 2>&1 || {
+            echo "::error::PKGBUILD failed to build"
+            exit 1
+          }
+          echo "::notice::PKGBUILD builds successfully!"
+
+      - name: Verify package
+        run: |
+          cd /home/builder/pkg
+          ls -la *.pkg.tar.zst || {
+            echo "::error::Package file not found"
+            exit 1
+          }

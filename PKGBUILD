@@ -3,14 +3,15 @@
 pkgname=bitchord-bin
 _appname=BitChord
 pkgver=1.8
-pkgrel=3
+pkgrel=4
 pkgdesc="A modern YouTube Music client with clean aesthetics inspired by Apple Music (prebuilt)"
 arch=('x86_64')
 url="https://github.com/kushagrasinghx/BitChord"
 license=('GPL-3.0-only')
 depends=('glibc' 'jq')
 makedepends=('imagemagick')
-optdepends=('mpv: alternative media backend')
+optdepends=('libnotify: notification when launching while an instance is already running'
+            'mpv: alternative media backend')
 provides=('bitchord')
 conflicts=('bitchord')
 options=('!strip')
@@ -35,16 +36,31 @@ package() {
     cp -a "${srcdir}/opt/bitchord" "${pkgdir}/opt/bitchord"
 
     # ---- Wrapper in PATH ----------------------------------------
-    # The app is a Compose Desktop (AWT) app: under Wayland it runs via
-    # XWayland. Desktops with XSettings (GNOME, KDE) scale it automatically,
-    # but compositors without XSettings (Hyprland, Sway, ...) leave it at
-    # scale 1, where the compositor upscales the buffer (blurry). Pass the
-    # compositor's monitor scale to AWT via sun.java2d.uiScale (supports
-    # fractional scales, unlike GDK_SCALE which is integer-only). A
-    # user-set GDK_SCALE or uiScale always takes precedence.
+    # Single-instance: the jpackage launcher is a plain JVM starter with
+    # no activation mechanism, so every invocation would spawn a second
+    # instance. If one is already running, focus its window (Hyprland)
+    # and exit instead.
+    #
+    # HiDPI: the app is a Compose Desktop (AWT) app, so it runs through
+    # XWayland. Desktops with XSettings (GNOME, KDE) scale it
+    # automatically, but compositors without XSettings (Hyprland, Sway,
+    # ...) leave it at scale 1, where the compositor upscales the buffer
+    # (blurry). Pass the compositor's monitor scale to AWT via
+    # sun.java2d.uiScale (supports fractional scales, unlike GDK_SCALE
+    # which is integer-only). A user-set GDK_SCALE or uiScale always
+    # takes precedence.
     install -dm755 "${pkgdir}/usr/bin"
     cat > "${pkgdir}/usr/bin/bitchord" <<'EOF'
 #!/bin/sh
+if _pid=$(pgrep -x BitChord | head -n1) && [ -n "$_pid" ]; then
+    if command -v hyprctl >/dev/null 2>&1 && hyprctl dispatch focuswindow "pid:$_pid" >/dev/null 2>&1; then
+        :
+    else
+        notify-send "BitChord" "Already running — use the tray icon to reopen its window." 2>/dev/null \
+            || echo "BitChord is already running (pid $_pid)." >&2
+    fi
+    exit 0
+fi
 if [ -z "$GDK_SCALE" ] && [ -z "$JAVA_TOOL_OPTIONS" ] && ! echo "$JDK_JAVA_OPTIONS $_JAVA_OPTIONS" | grep -q uiScale; then
     _scale=""
     if command -v hyprctl >/dev/null 2>&1 && hyprctl monitors >/dev/null 2>&1; then
